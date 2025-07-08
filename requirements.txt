@@ -1,0 +1,4 @@
+alpaca-trade-api==3.*
+pandas
+requests
+python-dotenv
