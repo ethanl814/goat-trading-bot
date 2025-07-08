@@ -21,12 +21,19 @@ class AlpacaBroker:
         return self.api.get_account()
 
     def submit_buy_market(self, symbol: str, qty: int):
-        return self.api.submit_order(symbo​l=symbol, qty=qty, side="buy",
-                                     type="market", time_in_force="day")
+        return self.api.submit_order(symbol=symbol,
+                                     qty=qty,
+                                     side="buy",
+                                     type="market",
+                                     time_in_force="day")
 
     def submit_sell_market(self, symbol: str, qty: int):
-        return self.api.submit_order(symbo​l=symbol, qty=qty, side="sell",
-                                     type="market", time_in_force="day")
+        return self.api.submit_order(symbol=symbol,
+                                     qty=qty,
+                                     side="sell",
+                                     type="market",
+                                     time_in_force="day")
+
 
     def current_price(self, symbol: str):
         bar = self.api.get_latest_trade(symbol)

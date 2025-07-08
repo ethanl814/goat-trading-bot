@@ -4,11 +4,13 @@ from bot.brokers.alpaca import AlpacaBroker
 from bot.data.edgar_feed import latest_filings
 from bot.strategies.insider_simple import decide_trade
 from bot.utils.logger import log_trade
+from bot.utils.state import load_seen, save_seen
 
 broker = AlpacaBroker(paper=True)
 print("Account equity:", broker.account_info().equity)
 
-seen = set()  # hash of filing links to avoid duplicates this session
+seen = load_seen()
+print(f"Loaded {len(seen)} previously-seen filings")
 
 while True:
     try:
@@ -17,6 +19,7 @@ while True:
             if fid in seen:
                 continue
             seen.add(fid)
+            save_seen(seen)
 
             order_params = decide_trade(filing)
             if order_params:
