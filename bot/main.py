@@ -31,6 +31,7 @@ while True:
                     print("   ↳ bought", order_params["symbol"])
                 except Exception as e:
                     print("   ↳ order failed:", e)
+        print("Polling cycle complete — sleeping")
         time.sleep(180)   # 3-minute poll
     except KeyboardInterrupt:
         break
