@@ -21,7 +21,7 @@ while True:
             seen.add(fid)
             save_seen(seen)
 
-            order_params = decide_trade(filing)
+            order_params = decide_trade(filing, broker)
             if order_params:
                 print("Signal:", filing["title"])
                 try:

@@ -1,9 +1,12 @@
 # bot/strategies/insider_simple.py
 from typing import Optional, Dict
+from bot.risk.size import dollar_position
+from bot.brokers.alpaca import AlpacaBroker
 
+TARGET_DOLLARS = 50
 SIGNIFICANT_ROLES = ("CEO", "CFO", "Director")  # simplistic placeholder
 
-def decide_trade(filing: Dict) -> Optional[Dict]:
+def decide_trade(filing: Dict, broker: AlpacaBroker) -> Optional[Dict]:
     """
     Very first heuristic:
     - Trade only Form 4 insider buys (we'll refine size filters later)
@@ -17,5 +20,10 @@ def decide_trade(filing: Dict) -> Optional[Dict]:
     title_lower = filing["title"].lower()
     if not any(role.lower() in title_lower for role in SIGNIFICANT_ROLES):
         return None
+    
+    price = broker.current_price(filing["ticker"])
+    qty = dollar_position(TARGET_DOLLARS, price)
+    if qty == 0:
+        return None
 
-    return {"action": "BUY", "symbol": filing["ticker"], "qty": 1}
+    return {"action": "BUY", "symbol": filing["ticker"], "qty": qty}
