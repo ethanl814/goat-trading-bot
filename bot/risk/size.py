@@ -1,9 +1,8 @@
 # bot/risk/size.py
-def dollar_position(qty_dollars: float, price: float) -> int:
-    """
-    Return integer share count so trade ≈ qty_dollars but ≥1 share.
-    Skip trade if price is zero or > qty_dollars (can't buy at least 1).
-    """
-    if price <= 0 or price > qty_dollars:
+TARGET_DOLLARS = 100  # <— adjust per trade
+
+def dollar_position(price: float) -> int:
+    """Return share qty so trade ≈ TARGET_DOLLARS; 0 means skip."""
+    if price <= 0 or price > TARGET_DOLLARS:
         return 0
-    return max(1, int(qty_dollars // price))
+    return max(1, int(TARGET_DOLLARS // price))

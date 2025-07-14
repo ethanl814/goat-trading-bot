@@ -22,8 +22,8 @@ def decide_trade(filing: Dict, broker: AlpacaBroker) -> Optional[Dict]:
         return None
     
     price = broker.current_price(filing["ticker"])
-    qty = dollar_position(TARGET_DOLLARS, price)
+    qty = dollar_position(price)
     if qty == 0:
         return None
-
-    return {"action": "BUY", "symbol": filing["ticker"], "qty": qty}
+    
+    return {"action": "BUY", "symbol": filing["ticker"], "qty": qty, "entry_price": price}
