@@ -2,7 +2,7 @@
 import time, hashlib, datetime as dt
 from bot.brokers.alpaca import AlpacaBroker
 from bot.data.edgar_feed import latest_filings
-from bot.strategies.insider_simple import decide_trade
+from bot.strategies import insider_simple, momentum
 from bot.utils.logger import log_trade, log_close
 from bot.utils.state import load_seen, save_seen
 from bot.utils.positions import load_open, add_position, remove_position
@@ -26,9 +26,17 @@ while True:
             if fid in seen:
                 continue
             seen.add(fid); save_seen(seen)
+            # Run all strategies; each strategy exposes decide_trade(filing, broker)
+            for strat in (insider_simple, momentum):
+                try:
+                    order = strat.decide_trade(filing, broker)
+                except Exception as e:
+                    print(f"strategy {strat.__name__} error:", e)
+                    order = None
 
-            order = decide_trade(filing, broker)
-            if order:
+                if not order:
+                    continue
+
                 try:
                     resp = broker.submit_buy_market(order["symbol"], order["qty"])
                     log_trade(filing, resp)
@@ -38,7 +46,7 @@ while True:
                         "entry_price": order["entry_price"],
                         "entry_time": dt.datetime.utcnow()
                     })
-                    print(f"BUY {order['symbol']} {order['qty']} @ {order['entry_price']}")
+                    print(f"BUY {order['symbol']} {order['qty']} @ {order['entry_price']} by {strat.__name__}")
                 except Exception as e:
                     print("order failed:", e)
 
