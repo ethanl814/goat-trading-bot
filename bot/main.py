@@ -2,7 +2,7 @@
 import time, hashlib, datetime as dt
 from bot.brokers.alpaca import AlpacaBroker
 from bot.data.edgar_feed import latest_filings
-from bot.strategies import insider_simple, momentum
+from bot.strategies.regular import insider_simple, momentum
 from bot.utils.logger import log_trade, log_close
 from bot.utils.state import load_seen, save_seen
 from bot.utils.positions import load_open, add_position, remove_position
