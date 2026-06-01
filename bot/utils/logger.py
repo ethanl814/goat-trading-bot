@@ -10,7 +10,7 @@ def log_trade(filing, order):
         if is_new:
             writer.writerow(["utc_time", "ticker", "form", "qty", "alpaca_id"])
         writer.writerow([
-            dt.datetime.utcnow().isoformat(timespec="seconds"),
+            dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             filing["ticker"],
             filing["form"],
             order.qty,
@@ -27,7 +27,7 @@ def log_close(entry, exit_price, reason):
                              "entry_price", "exit_price", "pnl_dollars", "reason"])
         pnl = (exit_price - entry["entry_price"]) * entry["qty"]
         writer.writerow([
-            dt.datetime.utcnow().isoformat(timespec="seconds"),
+            dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
             entry["symbol"], entry["qty"],
             entry["entry_price"], exit_price, round(pnl, 2), reason
         ])

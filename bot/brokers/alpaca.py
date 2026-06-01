@@ -1,14 +1,24 @@
 # bot/brokers/alpaca.py
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+import logging
 import os
 from dotenv import load_dotenv
 import alpaca_trade_api as tradeapi
 
 load_dotenv()  # read .env
 
+log = logging.getLogger(__name__)
+
+# IEX (free) data is delayed ~15 min; pad the window end so requests don't ask
+# for data we're not entitled to in real time.
+_DATA_DELAY = timedelta(minutes=16)
+
+
 @dataclass
 class AlpacaBroker:
     paper: bool = True
+    feed: str = field(default_factory=lambda: os.getenv("ALPACA_DATA_FEED", "iex"))
 
     def __post_init__(self):
         key = os.getenv("ALPACA_KEY_ID")
@@ -16,85 +26,87 @@ class AlpacaBroker:
         base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
         self.api = tradeapi.REST(key, secret, base_url, api_version="v2")
 
-    # --- public interface ---
+    # --- account / order interface ------------------------------------------
     def account_info(self):
         return self.api.get_account()
 
     def submit_buy_market(self, symbol: str, qty: int):
-        return self.api.submit_order(symbol=symbol,
-                                     qty=qty,
-                                     side="buy",
-                                     type="market",
-                                     time_in_force="day")
+        return self.api.submit_order(symbol=symbol, qty=qty, side="buy",
+                                     type="market", time_in_force="day")
 
     def submit_sell_market(self, symbol: str, qty: int):
-        return self.api.submit_order(symbol=symbol,
-                                     qty=qty,
-                                     side="sell",
-                                     type="market",
-                                     time_in_force="day")
+        return self.api.submit_order(symbol=symbol, qty=qty, side="sell",
+                                     type="market", time_in_force="day")
 
-
-    def current_price(self, symbol: str):
-        bar = self.api.get_latest_trade(symbol)
-        return bar.price
-
-    # --- market-data helpers (best-effort, defensive) ---
-    def avg_daily_volume(self, symbol: str, days: int = 20):
-        """Return average daily volume over `days`. Returns None on failure."""
+    def current_price(self, symbol: str) -> float | None:
         try:
-            bars = self.api.get_barset(symbol, 'day', limit=days)[symbol]
-            if not bars:
-                return None
-            vols = [b.v for b in bars if getattr(b, 'v', None) is not None]
-            return sum(vols) / len(vols) if vols else None
-        except Exception:
+            return self.api.get_latest_trade(symbol).price
+        except Exception as e:
+            log.warning("current_price(%s) failed: %s", symbol, e)
             return None
 
-    def percent_since_week_low(self, symbol: str, days: int = 7):
-        """Percent distance from the lowest close over the last `days` days. None on failure."""
+    # --- market-data helpers --------------------------------------------------
+    def _bars(self, symbol: str, timeframe, lookback_days: int, tail: int | None = None):
+        """Fetch historical bars over a date window and return the most recent
+        `tail` of them (or all). Returns [] on any failure (logged)."""
         try:
-            bars = self.api.get_barset(symbol, 'day', limit=days)[symbol]
-            if not bars:
+            end = datetime.now(timezone.utc) - _DATA_DELAY
+            start = end - timedelta(days=lookback_days)
+            bars = list(self.api.get_bars(symbol, timeframe,
+                                          start=start.isoformat(),
+                                          end=end.isoformat(),
+                                          feed=self.feed))
+            return bars[-tail:] if tail else bars
+        except Exception as e:
+            log.warning("get_bars(%s, %s) failed: %s", symbol, timeframe, e)
+            return []
+
+    def daily_closes(self, symbol: str, limit: int = 252) -> list[float]:
+        """Most recent `limit` daily closes (oldest -> newest)."""
+        # ~1.5 calendar days per trading day covers weekends/holidays.
+        bars = self._bars(symbol, tradeapi.TimeFrame.Day,
+                          lookback_days=int(limit * 1.6) + 10, tail=limit)
+        return [b.c for b in bars if getattr(b, "c", None) is not None]
+
+    def avg_daily_volume(self, symbol: str, days: int = 20) -> float | None:
+        bars = self._bars(symbol, tradeapi.TimeFrame.Day,
+                          lookback_days=int(days * 1.6) + 10, tail=days)
+        vols = [b.v for b in bars if getattr(b, "v", None) is not None]
+        return sum(vols) / len(vols) if vols else None
+
+    def percent_since_week_low(self, symbol: str, days: int = 7) -> float | None:
+        bars = self._bars(symbol, tradeapi.TimeFrame.Day,
+                          lookback_days=int(days * 1.6) + 10, tail=days)
+        lows = [b.l for b in bars if getattr(b, "l", None) is not None]
+        closes = [b.c for b in bars if getattr(b, "c", None) is not None]
+        if not lows or not closes:
+            return None
+        low = min(lows)
+        if low <= 0:
+            return None
+        return (closes[-1] - low) / low * 100
+
+    def bid_ask_spread(self, symbol: str) -> float | None:
+        try:
+            q = self.api.get_latest_quote(symbol, feed=self.feed)
+            if q.bid_price is None or q.ask_price is None:
                 return None
-            lows = [b.l for b in bars if getattr(b, 'l', None) is not None]
-            closes = [b.c for b in bars if getattr(b, 'c', None) is not None]
-            if not lows or not closes:
-                return None
-            low = min(lows)
-            latest = closes[-1]
-            if low <= 0:
-                return None
-            return (latest - low) / low * 100
-        except Exception:
+            return q.ask_price - q.bid_price
+        except Exception as e:
+            log.warning("bid_ask_spread(%s) failed: %s", symbol, e)
             return None
 
-    def bid_ask_spread(self, symbol: str):
-        """Return current bid-ask spread (ask - bid) or None on failure."""
-        try:
-            q = self.api.get_latest_quote(symbol)
-            return None if (q is None or q.bidprice is None or q.askprice is None) else (q.askprice - q.bidprice)
-        except Exception:
+    def intraday_volatility(self, symbol: str, minutes: int = 60) -> float | None:
+        # Look back a few days so we still get a session's worth of bars when the
+        # market is closed, then take the most recent `minutes` bars.
+        bars = self._bars(symbol, tradeapi.TimeFrame.Minute, lookback_days=5, tail=minutes)
+        closes = [b.c for b in bars if getattr(b, "c", None) is not None]
+        if len(closes) < 2:
             return None
-
-    def intraday_volatility(self, symbol: str, minutes: int = 60):
-        """Return a simple intraday volatility estimate (stddev of minute returns); None on failure."""
-        try:
-            bars = self.api.get_barset(symbol, '1Min', limit=minutes)[symbol]
-            if not bars or len(bars) < 2:
-                return None
-            closes = [b.c for b in bars]
-            returns = []
-            for i in range(1, len(closes)):
-                prev = closes[i - 1]
-                if prev:
-                    returns.append((closes[i] - prev) / prev)
-            if not returns:
-                return None
-            # sample standard deviation
-            import math
-            mean = sum(returns) / len(returns)
-            var = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1) if len(returns) > 1 else 0.0
-            return math.sqrt(var)
-        except Exception:
+        returns = [(closes[i] - closes[i - 1]) / closes[i - 1]
+                   for i in range(1, len(closes)) if closes[i - 1]]
+        if len(returns) < 2:
             return None
+        mean = sum(returns) / len(returns)
+        var = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+        return var ** 0.5

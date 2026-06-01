@@ -1,5 +1,5 @@
 # bot/risk/exit.py
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 STOP_PCT   = 0.10   # sell if –10 %
@@ -11,6 +11,6 @@ def should_exit(entry_price: float, current_price: float, entry_time: datetime) 
         return "STOP"
     if current_price >= entry_price * (1 + PROFIT_PCT):
         return "TP"
-    if datetime.utcnow() - entry_time >= timedelta(days=MAX_DAYS):
+    if datetime.now(timezone.utc) - entry_time >= timedelta(days=MAX_DAYS):
         return "TIME"
     return None

@@ -2,6 +2,8 @@
 from typing import Optional, Dict
 from bot.risk.size import dollar_position
 from bot.brokers.alpaca import AlpacaBroker
+from bot.core.strategy import Strategy
+from bot.core.events import Event, EventType, Order
 import datetime as dt
 import csv, pathlib
 
@@ -139,3 +141,16 @@ def decide_trade(filing: Dict, broker: AlpacaBroker) -> Optional[Dict]:
 
     # final conservative order
     return {"action": "BUY", "symbol": symbol, "qty": qty, "entry_price": price}
+
+
+class InsiderSimple(Strategy):
+    """Buy on significant-insider Form 4 filings, with liquidity/volatility guards."""
+    name = "insider_simple"
+    subscribes = (EventType.FILING,)
+
+    def on_event(self, event: Event, broker: AlpacaBroker) -> Optional[Order]:
+        decision = decide_trade(event.payload, broker)
+        if not decision:
+            return None
+        return Order(symbol=decision["symbol"], qty=decision["qty"],
+                     side="buy", entry_price=decision["entry_price"], strategy=self.name)

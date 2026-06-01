@@ -1,75 +1,53 @@
 # bot/main.py
-import time, hashlib, datetime as dt
+"""Entrypoint: build the engine, register signal sources + strategies, run.
+
+    python -m bot.main
+
+Everything heavy lives in bot/core (engine, registry) and bot/sources. Adding a
+strategy needs no change here — it's auto-discovered. Adding a data source is
+one `engine.add_source(...)` line.
+"""
+import logging
+import os
+
 from bot.brokers.alpaca import AlpacaBroker
-from bot.data.edgar_feed import latest_filings
-from bot.strategies.regular import insider_simple, momentum
-from bot.utils.logger import log_trade, log_close
-from bot.utils.state import load_seen, save_seen
-from bot.utils.positions import load_open, add_position, remove_position
-from bot.risk.exit import should_exit
+from bot.core.engine import Engine
+from bot.core.registry import discover_strategies
+from bot.sources.clock import ClockSource
+from bot.sources.edgar import EdgarSource
 
-# ---------------- startup ----------------------------------------------------
-broker = AlpacaBroker(paper=True)
-print("Account equity:", broker.account_info().equity)
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("bot")
 
-seen = load_seen()
-print(f"Loaded {len(seen)} previously-seen filings")
+POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "180"))
 
-print("Bot started — polling every 3 min")
-# ---------------------------------------------------------------------------
 
-while True:
-    try:
-        # ---------- 1. Check for new filings & open entries  ----------
-        for filing in latest_filings():
-            fid = hashlib.sha1(filing["link"].encode()).hexdigest()
-            if fid in seen:
-                continue
-            seen.add(fid); save_seen(seen)
-            # Run all strategies; each strategy exposes decide_trade(filing, broker)
-            for strat in (insider_simple, momentum):
-                try:
-                    order = strat.decide_trade(filing, broker)
-                except Exception as e:
-                    print(f"strategy {strat.__name__} error:", e)
-                    order = None
+def main() -> None:
+    broker = AlpacaBroker(paper=True)
+    log.info("Account equity: %s", broker.account_info().equity)
 
-                if not order:
-                    continue
+    strategies = discover_strategies(
+        disabled=tuple(s for s in os.getenv("DISABLED_STRATEGIES", "").split(",") if s)
+    )
+    if not strategies:
+        log.warning("no strategies discovered")
 
-                try:
-                    resp = broker.submit_buy_market(order["symbol"], order["qty"])
-                    log_trade(filing, resp)
-                    add_position({
-                        "symbol": order["symbol"],
-                        "qty": order["qty"],
-                        "entry_price": order["entry_price"],
-                        "entry_time": dt.datetime.utcnow()
-                    })
-                    print(f"BUY {order['symbol']} {order['qty']} @ {order['entry_price']} by {strat.__name__}")
-                except Exception as e:
-                    print("order failed:", e)
+    engine = Engine(broker, strategies)
+    engine.add_source(EdgarSource(interval=POLL_INTERVAL))   # filing signals (polled)
+    engine.add_source(ClockSource(interval=POLL_INTERVAL))   # heartbeat -> exit checks
 
-        # ---------- 2. Check exits for every open position  ----------
-        for pos in load_open():
-            cur_price = broker.current_price(pos["symbol"])
-            reason = should_exit(pos["entry_price"], cur_price, pos["entry_time"])
-            if reason:
-                try:
-                    broker.submit_sell_market(pos["symbol"], pos["qty"])
-                    log_close(pos, cur_price, reason)
-                    remove_position(pos["symbol"])
-                    print(f"EXIT {pos['symbol']} via {reason} @ {cur_price}")
-                except Exception as e:
-                    print("exit failed:", e)
+    # Low-latency real-time market data (opt-in). Enable once you have strategies
+    # subscribing to BAR/QUOTE/TRADE events:
+    #
+    #   from bot.sources.alpaca_stream import AlpacaStreamSource
+    #   engine.add_source(AlpacaStreamSource(symbols=["AAPL", "MSFT"], subscribe=("bars",)))
 
-        # ---------- 3. Sleep until next cycle  ----------
-        print("Polling cycle complete — sleeping")
-        time.sleep(180)       # 3-minute poll
+    engine.run()
 
-    except KeyboardInterrupt:
-        print("Manual stop — goodbye")
-        break
-    except Exception as e:
-        print("loop error:", e)
-        time.sleep(60)
+
+if __name__ == "__main__":
+    main()

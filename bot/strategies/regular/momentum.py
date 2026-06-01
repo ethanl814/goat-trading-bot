@@ -19,7 +19,8 @@ The strategy exposes decide_trade(filing, broker) to match existing pattern.
 from typing import Optional, Dict
 from bot.risk.size import dollar_position
 from bot.brokers.alpaca import AlpacaBroker
-import statistics, math
+from bot.core.strategy import Strategy
+from bot.core.events import Event, EventType, Order
 
 # thresholds
 MIN_AVG_DAILY_VOLUME = 50_000
@@ -102,12 +103,8 @@ def decide_trade(filing: Dict, broker: AlpacaBroker) -> Optional[Dict]:
     if not symbol:
         return None
 
-    # fetch daily bars (we'll use Alpaca REST via broker.api where possible)
-    try:
-        bars = broker.api.get_barset(symbol, 'day', limit=252)[symbol]
-    except Exception:
-        return None
-    closes = [b.c for b in bars if getattr(b, 'c', None) is not None]
+    # fetch daily closes via the broker's market-data helper
+    closes = broker.daily_closes(symbol, limit=252)
     if len(closes) < MA_LONG:
         return None
 
@@ -167,3 +164,16 @@ def decide_trade(filing: Dict, broker: AlpacaBroker) -> Optional[Dict]:
         return None
 
     return {"action": "BUY", "symbol": symbol, "qty": qty, "entry_price": price}
+
+
+class Momentum(Strategy):
+    """Technical-momentum confirmation on insider (Form 4) filings."""
+    name = "momentum"
+    subscribes = (EventType.FILING,)
+
+    def on_event(self, event: Event, broker: AlpacaBroker) -> Optional[Order]:
+        decision = decide_trade(event.payload, broker)
+        if not decision:
+            return None
+        return Order(symbol=decision["symbol"], qty=decision["qty"],
+                     side="buy", entry_price=decision["entry_price"], strategy=self.name)
