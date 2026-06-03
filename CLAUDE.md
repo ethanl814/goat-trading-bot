@@ -66,6 +66,63 @@ sources (threads)            engine (1 consumer)
 
 `ui/` is a separate FastAPI-style backend scaffold (backtest/payoff/strategies/trades routes). It is **not wired into the live bot loop** — treat it as independent until told otherwise.
 
+> ⚠️ The "Architecture (big picture)" section above describes the **legacy** `bot/core` engine. For new work use `bot/framework/` (below). The two share conventions but not code.
+
+## Writing a signal for the framework (`bot/framework/`)
+
+This is the part you'll touch most. A *signal* is the plug-in unit; a *strategy* is config (`StrategySpec`) that points at a signal. The full design is in `docs/framework-design.md`; the working rules:
+
+**The `Signal` contract** (`bot/framework/signals/base.py`):
+- One instance **per instrument** — the engine fans your class out to N stateful copies, one per symbol in the strategy's universe. Don't share state across symbols.
+- `update(self, state, event)` must be **O(1)**. Fold the new event into rolling state (running sums, ring buffers, Welford via `RollingMeanStd`). **Never** recompute a window from scratch per tick — `tests/test_signal_equivalence.py` enforces this discipline for `RollingMeanStd`.
+- `value(self)` returns a **normalized** number (a z-score / standardized signal), or `None` during warm-up. The allocator *ranks* these; it never sees a raw price or a raw % move. This is deliberate: a flat "X% move" threshold has nowhere to live.
+- `applies_to` (tuple of `AssetClass`) restricts a signal to certain classes; empty = any.
+
+**Hard rules (the seam that keeps signals portable):**
+- A signal **only reads `MarketState` and emits a value**. It must **never** call the broker, submit orders, read/write position state, check exits, or log trades — the engine/allocator/risk/broker own all of that.
+- Read price via `state.price()` (mid if a book exists, else last trade/close), `state.mid`, or `state.last_bar`. If you need history, keep your *own* incremental buffer; don't reach for the broker.
+- Sizing, shorting, caps, and exits are **not** your concern — the `CrossSectionalAllocator` + `RiskMonitor` + `InstrumentSpec` constraints handle them generically.
+
+**Minimal example** — drop in `bot/framework/signals/my_signal.py`:
+```python
+from bot.framework.signals.base import Signal
+from bot.framework.registry import register
+from bot.framework.state import RollingMeanStd
+
+@register("my_momentum")              # the name you reference from control.py
+class MyMomentum(Signal):
+    name = "my_momentum"
+    def __init__(self, instrument, spec, window=20):
+        super().__init__(instrument, spec)
+        self.stats = RollingMeanStd(window)
+        self.prev = None
+        self._value = None
+    def update(self, state, event):    # O(1)
+        p = state.price()
+        if p is None or p <= 0:
+            return
+        if self.prev:
+            self.stats.push((p - self.prev) / self.prev)
+            if self.stats.ready and self.stats.std() > 0:
+                self._value = self.stats.mean() / self.stats.std()   # momentum z-score
+        self.prev = p
+    def value(self):
+        return self._value
+```
+
+**Turn it on** — edit `control.py` only (no engine edits):
+```python
+StrategySpec(name="mom-tech", signal="my_momentum", enabled=True,
+             symbols=["AAPL","MSFT","NVDA"], signal_params={"window": 30})
+```
+Then evaluate it on real history: `python -m bot.run backtest --start 2023-01-01 --end 2023-12-31`.
+
+**Gotchas specific to the framework:**
+- `signal_params` in the `StrategySpec` are passed as `**kwargs` to your `__init__` — names must match.
+- Decisions run **only on `Clock` events** (throttled), not on every tick. `update` keeps state fresh O(1); `value()` is read at the next Clock. Don't assume `value()` is consumed the instant you set it.
+- The `CrossSectionalAllocator` needs ≥ `min_names` (default 2) live signal values to act, and goes long the top slice / short the bottom slice. A single-symbol universe with a cross-sectional allocator will (correctly) do nothing — use multiple names, or a `ThresholdAllocator` for per-name triggers.
+- Execution is `SimBroker` in SIM/backtest; the engine is identical in paper/live (only the broker swaps). Backtests **always** use `SimBroker` regardless of `MODE`.
+
 ## Project-specific gotchas
 
 These are non-obvious and have already bitten this codebase:
