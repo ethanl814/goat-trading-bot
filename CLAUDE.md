@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A Python algorithmic equity trading bot, evolving into a small "mini quant platform": event-driven engine, pluggable signal sources, auto-discovered strategies, Alpaca for execution. Currently paper-trading. Two strategies implemented (`insider_simple`, `momentum`), both filing-driven. The README is one-paragraph; the real context is here.
 
-> **Two cores exist right now.** `bot/core` + `bot/main` (threads/queue, equities/filing, polling) is the **legacy** prototype. `bot/framework/` is the **new** asyncio, multi-asset, mode-agnostic core (see `docs/framework-design.md`) — entrypoints `bot/live.py` (live-paper) and `bot/backtest.py` (replay). New work goes in `bot/framework/`; the legacy core is kept only until equities are re-wired there, then it can be deleted. The practice strategies were intentionally not ported. Don't cross-wire the two.
+> **Two cores exist right now.** `bot/core` + `bot/main` (threads/queue, equities/filing, polling) is the **legacy** prototype. `bot/framework/` is the **new** asyncio, multi-asset, mode-agnostic core (see `docs/framework-design.md`). Control it from **`control.py`** (the knob panel: `ENABLED`, `MODE` sim/paper/live, `STRATEGIES` with per-strategy on/off) and launch with **`python -m bot.run {backtest|live}`**. New work goes in `bot/framework/`; the legacy core is kept only until fully superseded, then it can be deleted. The practice strategies were intentionally not ported. Don't cross-wire the two.
 
 ## Run / develop
 

@@ -19,11 +19,17 @@ _DATA_DELAY = timedelta(minutes=16)
 class AlpacaBroker:
     paper: bool = True
     feed: str = field(default_factory=lambda: os.getenv("ALPACA_DATA_FEED", "iex"))
+    # Explicit creds override the environment — lets the mode/credential layer
+    # (bot/framework/modes.py) point this at the paper vs live account. When None,
+    # falls back to the legacy ALPACA_KEY_ID/SECRET/BASE_URL env vars.
+    key_id: str | None = None
+    secret_key: str | None = None
+    base_url: str | None = None
 
     def __post_init__(self):
-        key = os.getenv("ALPACA_KEY_ID")
-        secret = os.getenv("ALPACA_SECRET_KEY")
-        base_url = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        key = self.key_id or os.getenv("ALPACA_KEY_ID")
+        secret = self.secret_key or os.getenv("ALPACA_SECRET_KEY")
+        base_url = self.base_url or os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
         self.api = tradeapi.REST(key, secret, base_url, api_version="v2")
 
     # --- account / order interface ------------------------------------------

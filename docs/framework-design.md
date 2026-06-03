@@ -55,10 +55,13 @@ resurrect later as proper signals if wanted.
 
 ## Asset classes
 
-- **Equities (Alpaca)** — fully wired in `adapters/equities_alpaca.py`. Currently
-  polls REST for trades and emits `Trade` events; swapping to the websocket stream
-  is a contained change to `run()` (the next wiring step). Execution is always
-  `SimBroker` — no real orders.
+- **Equities (Alpaca)** — fully wired in `adapters/equities_alpaca.py`. Uses
+  Alpaca's **websocket stream** (trades + quotes) on our asyncio loop, with a
+  REST-polling fallback if the socket can't connect. Shortability is read live
+  from the asset's `shortable` flag; session state from the Alpaca clock.
+  Verified end-to-end against the live IEX feed. Execution is always `SimBroker`
+  — no real orders. (Latency floor is the feed: IEX is ~15 min delayed; SIP for
+  real-time.)
 - **Prediction markets** — `adapters/prediction_market.py` is a deliberate **stub**
   that replays a scripted lifecycle (quotes → resolution) to prove the seam:
   probability prices in [0,1], long-only/capped constraints, and the settlement
@@ -66,22 +69,39 @@ resurrect later as proper signals if wanted.
 - **Crypto / futures** — not yet present; each is one new adapter emitting specs +
   events, no core changes.
 
-## Run it
+## Control panel & launcher
+
+`control.py` (project root) is the one file you edit: the global `ENABLED` switch,
+`MODE` (SIM / PAPER / LIVE), book-level `CONFIG`, the `STRATEGIES` list (each with
+an `enabled` toggle, signal, params, universe, capital slice), and the backtest
+window. `bot/run.py` reads it and dispatches.
+
+- **Modes** (`modes.py`): `SIM` = SimBroker (fake fills, default), `PAPER` = real
+  orders to the Alpaca paper account, `LIVE` = real money. Credentials resolve per
+  mode from env (`ALPACA_PAPER_*` / `ALPACA_LIVE_*`, legacy `ALPACA_*` = paper).
+  LIVE refuses to arm unless `ALLOW_LIVE_TRADING=yes` — a deliberate second step.
+- **Multi-strategy:** the engine runs all enabled strategies concurrently against
+  one shared book; each proposes targets over its own universe/capital slice and
+  the engine sums them, then the RiskMonitor gates the total once.
+- **History** (`history.py`): `fetch_or_load` pulls real Alpaca bars and caches
+  them to `data/` as CSV, so backtests run on real prices (not just synthetic).
 
 ```bash
 source .venv/bin/activate
-python -m bot.backtest                 # synthetic data, end-to-end, no creds
-python -m bot.backtest data/bars.csv   # replay CSV: ts,symbol,open,high,low,close,volume
-python -m bot.live AAPL MSFT NVDA      # live-paper on Alpaca data (needs .env)
-python -m pytest tests/                # state, incremental-vs-naive, simbroker, risk, e2e
+python -m bot.run backtest --synthetic                  # random-walk, no creds
+python -m bot.run backtest                              # real bars per control.BACKTEST
+python -m bot.run backtest --start 2023-01-01 --end 2023-06-30 --timeframe 1Day
+python -m bot.run live                                  # live data; SimBroker/paper/live per MODE
+python -m pytest tests/                                 # 17 tests
 ```
 
 ## Known rough edges / next steps
 
-- Equities adapter is poll-based; upgrade to websocket push.
 - Reference signal is intentionally noise-churning (it tripped the kill switch on
   the synthetic demo). Real signals come later; this only validates plumbing.
-- Borrow/shortability for equities is a static `True`; refine against Alpaca's
-  shortable flag when it matters.
+- IEX feed is ~15 min delayed — the data floor, independent of our transport.
+  Move to SIP (`ALPACA_DATA_FEED=sip`) for real-time when it matters.
+- Crypto and prediction-market adapters are next (crypto via ccxt; replace the
+  prediction-market stub with Kalshi/Polymarket).
 - The `ui/` backtest service is still the old, separate one — eventually retire it
   in favor of `bot/backtest.py` so there's a single backtest path.

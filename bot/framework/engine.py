@@ -19,15 +19,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 
-from bot.framework.allocator import Allocator
-from bot.framework.broker import Order, SimBroker
+from bot.framework.broker import Broker, Order
 from bot.framework.events import Clock, Event, MARKET_EVENTS, Resolution
 from bot.framework.recorder import Recorder
 from bot.framework.risk import RiskMonitor
-from bot.framework.signals.base import Signal
 from bot.framework.sources import Source
 from bot.framework.state import MarketState
+from bot.framework.strategy import StrategyRunner
 from bot.framework.universe import Universe
 
 log = logging.getLogger(__name__)
@@ -41,24 +41,22 @@ class EventEngine:
         *,
         sources: list[Source],
         universe: Universe,
-        signal_factory,                      # (symbol, spec) -> Signal
-        allocator: Allocator,
+        strategies: list[StrategyRunner],
         risk: RiskMonitor,
-        broker: SimBroker,
+        broker: Broker,
         recorder: Recorder | None = None,
     ):
         self.sources = sources
         self.universe = universe
-        self.allocator = allocator
+        self.strategies = [s for s in strategies if s.enabled]
         self.risk = risk
         self.broker = broker
         self.recorder = recorder
 
-        self.states: dict[str, MarketState] = {}
-        self.signals: dict[str, Signal] = {}
-        for spec in universe.active():
-            self.states[spec.symbol] = MarketState(spec)
-            self.signals[spec.symbol] = signal_factory(spec.symbol, spec)
+        # One shared MarketState per instrument (union of all strategy universes).
+        self.states: dict[str, MarketState] = {
+            spec.symbol: MarketState(spec) for spec in universe.active()
+        }
 
     # --- lifecycle -----------------------------------------------------------
     async def run(self, stop: asyncio.Event | None = None) -> None:
@@ -76,8 +74,8 @@ class EventEngine:
             await queue.put(_SENTINEL)
 
         sup = asyncio.create_task(supervise())
-        log.info("engine started | %d instruments | %d sources",
-                 len(self.signals), len(self.sources))
+        log.info("engine started | %d instruments | %d strategies | %d sources",
+                 len(self.states), len(self.strategies), len(self.sources))
         try:
             while not stop.is_set():
                 event = await queue.get()
@@ -106,9 +104,11 @@ class EventEngine:
         if st is None:
             return  # not in universe (or already resolved away)
         st.update(event)
-        sig = self.signals.get(event.instrument)
-        if sig is not None:
-            sig.update(st, event)
+        # fan the event out to every strategy that trades this instrument
+        for strat in self.strategies:
+            sig = strat.signals.get(event.instrument)
+            if sig is not None:
+                sig.update(st, event)
 
     def _on_resolution(self, event: Resolution) -> None:
         sym = event.instrument
@@ -117,17 +117,29 @@ class EventEngine:
             self.recorder.record_fill(fill)
         self.universe.remove(sym)
         self.states.pop(sym, None)
-        self.signals.pop(sym, None)
+        for strat in self.strategies:
+            strat.signals.pop(sym, None)
 
     # --- the throttled decision step ----------------------------------------
     def _decide(self, clock: Clock) -> None:
         equity = self.broker.equity(self.states)
         self.risk.check_drawdown(equity)  # may trip the kill switch
 
-        sigvals = {sym: sig.value() for sym, sig in self.signals.items()}
         specs = {s.symbol: s for s in self.universe.active()}
-        targets = self.allocator.targets(sigvals, self.states, specs, equity)
-        targets = self.risk.gate(targets, self.states, specs, equity)
+
+        # each strategy proposes targets over its own universe/capital slice;
+        # sum them into one combined book, then gate the total once.
+        book: dict[str, float] = defaultdict(float)
+        for strat in self.strategies:
+            sigvals = {sym: sig.value() for sym, sig in strat.signals.items()}
+            sub_specs = {sym: specs[sym] for sym in strat.signals if sym in specs}
+            sub_states = {sym: self.states[sym] for sym in strat.signals if sym in self.states}
+            proposed = strat.allocator.targets(
+                sigvals, sub_states, sub_specs, equity * strat.capital_frac)
+            for sym, qty in proposed.items():
+                book[sym] += qty
+
+        targets = self.risk.gate(dict(book), self.states, specs, equity)
 
         # diff targets against current book -> orders for the delta
         names = set(targets) | set(self.broker.positions())
