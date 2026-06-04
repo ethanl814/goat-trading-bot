@@ -123,6 +123,25 @@ Then evaluate it on real history: `python -m bot.run backtest --start 2023-01-01
 - The `CrossSectionalAllocator` needs ≥ `min_names` (default 2) live signal values to act, and goes long the top slice / short the bottom slice. A single-symbol universe with a cross-sectional allocator will (correctly) do nothing — use multiple names, or a `ThresholdAllocator` for per-name triggers.
 - Execution is `SimBroker` in SIM/backtest; the engine is identical in paper/live (only the broker swaps). Backtests **always** use `SimBroker` regardless of `MODE`.
 
+## Venues (multi-asset, `bot/framework/venues/`)
+
+Each trading venue / asset class is a **self-contained package** implementing the `Venue` contract (`venues/base.py`): `live_setup`, `backtest_setup`, `_live_broker`. The launcher (`bot/run.py`) looks one up by name via the registry — the core never imports a venue. Adding a venue = drop a package with a `Venue` subclass and `register_venue(...)` in its `__init__`. A `StrategySpec.venue` field routes each strategy; a run targets one venue.
+
+- **`venues/alpaca/`** — equities. `adapter.py` (websocket data), `broker.py` (`LiveAlpacaBroker`, scaffold), `history.py` (bars), `creds.py` (per-mode keys).
+- **`venues/kalshi/`** — prediction markets. `auth.py` (RSA-PSS signing), `client.py` (REST), `adapter.py` (poll → Quote/Trade/Resolution), `history.py` (candles → Bars), `broker.py` (`LiveKalshiBroker`, scaffold).
+
+**Writing a prediction-market thesis:** subclass `ProbabilityReversion` (`signals/edge.py`) and override `fair_value(self, state)` to return *your* model's probability; the framework standardizes the edge, triggers via `allocator="threshold"`, and computes binary-payoff PnL through `Resolution`/`SimBroker.settle`. Set `venue="kalshi"` and real tickers in `control.py`.
+
+**Kalshi gotchas (verified live):**
+- Auth is **RSA-PSS** (SHA256, MGF1, salt=digest len) signing `timestamp+METHOD+path` (path excludes query). Headers: `KALSHI-ACCESS-{KEY,TIMESTAMP,SIGNATURE}`. Key id + PEM path live in `.env`; the PEM itself is in `.secrets/` (git-ignored). The same key worked against **both** prod and demo in testing.
+- Open markets have `status == "active"` (not `"open"`). Settled markets carry `result` = `"yes"`/`"no"` → the adapter emits `Resolution(1.0/0.0)`.
+- **Candlesticks are series-scoped on the trade host**: `GET /trade-api/v2/series/{series}/markets/{ticker}/candlesticks` (series = ticker prefix before the first `-`). The `external-api.../historical/...` path only serves archived markets and 404s on active ones.
+- **Candle OHLC fields are suffixed `_dollars`** (`price.close_dollars`, `yes_bid.close_dollars`, …) and volume is `volume_fp` — NOT bare `close`/`volume`. `history._field` handles both; don't "simplify" it away.
+- Market prices are fixed-point **dollar strings in [0,1]** (e.g. `"0.5600"`), in fields like `yes_bid_dollars`/`last_price_dollars`. `client.to_float` parses them.
+- **Backtesting a thesis: use settled markets.** `venues/kalshi/history.fetch_resolutions` appends a `Resolution` (YES→1.0/NO→0.0) at each settled market's close, so the engine settles positions at the true outcome — real binary-payoff PnL (verified: a YES resolve paid +$1 per contract through `SimBroker.settle`).
+- **Finding markets:** `python -m scripts.kalshi_discover` (uses `venues/kalshi/discover.py`). `get_markets(status="open")` is flooded with auto-generated **sports parlay** markets (`KXMVE...` and per-match `KXITF*`/`KXWTA*`), so discovery filters parlays, ranks by liquidity, lists series with `--series-list`, and checks candle history with `--check TICKER`. Use `--status settled` to find backtestable markets with full history; copy the printed `symbols=[...]` into `control.py`.
+- Hosts: prod trade `api.elections.kalshi.com`, demo `demo-api.kalshi.co`; overridable via `KALSHI_TRADE_HOST` / `KALSHI_ENV`.
+
 ## Project-specific gotchas
 
 These are non-obvious and have already bitten this codebase:

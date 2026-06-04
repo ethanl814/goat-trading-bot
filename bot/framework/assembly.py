@@ -11,7 +11,7 @@ usage a one-liner.
 """
 from __future__ import annotations
 
-from bot.framework.allocator import CrossSectionalAllocator
+from bot.framework.allocator import CrossSectionalAllocator, ThresholdAllocator
 from bot.framework.broker import Broker, SimBroker
 from bot.framework.config import RunConfig, StrategySpec
 from bot.framework.engine import EventEngine
@@ -49,12 +49,7 @@ def build_engine(
         syms = sspec.symbols or list(spec_map)
         signals = {s: signal_cls(s, spec_map[s], **sspec.signal_params)
                    for s in syms if s in spec_map}
-        allocator = CrossSectionalAllocator(
-            gross_target_frac=sspec.gross_target_frac,
-            top_frac=sspec.top_frac,
-            bottom_frac=sspec.bottom_frac,
-        )
-        runners.append(StrategyRunner(sspec.name, signals, allocator,
+        runners.append(StrategyRunner(sspec.name, signals, _make_allocator(sspec),
                                       capital_frac=sspec.capital_frac))
 
     risk = RiskMonitor(cfg.risk)
@@ -68,4 +63,14 @@ def build_engine(
         risk=risk,
         broker=broker,
         recorder=recorder,
+    )
+
+
+def _make_allocator(sspec: StrategySpec):
+    if sspec.allocator == "threshold":
+        return ThresholdAllocator(entry_z=sspec.entry_z, per_name_frac=sspec.per_name_frac)
+    return CrossSectionalAllocator(
+        gross_target_frac=sspec.gross_target_frac,
+        top_frac=sspec.top_frac,
+        bottom_frac=sspec.bottom_frac,
     )

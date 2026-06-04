@@ -22,6 +22,7 @@ import logging
 import random
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from bot.framework.events import Bar, Clock, Event, Trade
 from bot.framework.sources import Emit, Source
@@ -71,6 +72,32 @@ def generate_synthetic_bars(
                               open=o, high=hi, low=lo, close=c,
                               volume=rng.uniform(1e3, 1e5)))
             price = new
+    return events
+
+
+def save_bars_csv(events: list[Event], path: str | Path) -> None:
+    """Write Bar events to CSV (ts,symbol,open,high,low,close,volume)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["ts", "symbol", "open", "high", "low", "close", "volume"])
+        for e in events:
+            if isinstance(e, Bar):
+                w.writerow([e.ts.isoformat(), e.instrument, e.open, e.high, e.low, e.close, e.volume])
+
+
+def cached_bars(cache_dir: str | Path, key: str,
+                fetch: Callable[[], list[Event]]) -> list[Event]:
+    """Load bars from a cached CSV if present, else call `fetch` and cache it.
+    Venue-agnostic: any venue's historical loader can reuse this."""
+    cache = Path(cache_dir) / f"bars_{key}.csv"
+    if cache.exists():
+        log.info("loading cached bars from %s", cache)
+        return load_bars_csv(cache)
+    events = fetch()
+    if events:
+        save_bars_csv(events, cache)
     return events
 
 

@@ -1,21 +1,14 @@
-# bot/framework/brokers_live.py
-"""LiveAlpacaBroker — SCAFFOLD for real order routing through Alpaca.
+# bot/framework/venues/alpaca/broker.py
+"""LiveAlpacaBroker — SCAFFOLD for real equities order routing through Alpaca.
 
-Implements the same `Broker` interface as `SimBroker`, so the engine doesn't know
-or care whether fills are simulated or real. It routes market orders via the
-existing `AlpacaBroker` wrapper and reads positions/equity from the Alpaca account.
+Same `Broker` interface as `SimBroker`, so the engine is agnostic. Routes market
+orders and reads positions/equity from the Alpaca account.
 
-⚠️ This is scaffolding, not production-ready. Known gaps to close before trusting
-it with money:
-  - Fills are asynchronous: `submit` returns an *estimated* Fill at the reference
-    price; the real fill price/qty arrive later via the trade-updates stream
-    (not yet wired). Reconcile against actual fills before relying on PnL.
-  - No partial-fill / rejection / retry handling.
-  - Realized PnL here is read from the account, not reconstructed per-trade.
-  - No idempotency/client-order-id dedup if the engine restarts.
-
-It is gated behind `modes.make_broker` (LIVE requires ALLOW_LIVE_TRADING=yes), so
-nothing routes real orders by accident.
+⚠️ Scaffold, not production-ready. Fills are asynchronous: `submit` returns an
+*estimated* Fill at the reference price; the real fill arrives later via the
+trade-updates stream (not yet wired). No partial-fill / rejection / retry /
+idempotency handling. Gated behind `Venue.make_broker` (LIVE needs
+ALLOW_LIVE_TRADING=yes), so nothing routes by accident.
 """
 from __future__ import annotations
 
@@ -23,8 +16,9 @@ import logging
 from datetime import datetime, timezone
 
 from bot.framework.broker import Broker, Fill, Order, Position
-from bot.framework.modes import TradingMode, make_data_broker
+from bot.framework.modes import TradingMode
 from bot.framework.state import MarketState
+from bot.framework.venues.alpaca.creds import data_broker
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +27,7 @@ class LiveAlpacaBroker(Broker):
     def __init__(self, mode: TradingMode, spec_map: dict):
         self.mode = mode
         self.specs = spec_map
-        self._api = make_data_broker(mode)  # AlpacaBroker (also exposes .api)
+        self._api = data_broker(mode)
         self.realized = 0.0
 
     def submit(self, order: Order, state: MarketState) -> Fill | None:
@@ -50,7 +44,6 @@ class LiveAlpacaBroker(Broker):
         except Exception:
             log.exception("live order failed: %s", order)
             return None
-        # estimated fill — real price/qty reconcile later via trade updates (TODO)
         return Fill(order.instrument, qty, ref or 0.0, 0.0,
                     datetime.now(timezone.utc), realized=0.0)
 

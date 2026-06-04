@@ -209,3 +209,7 @@ __marimo__/
 
 # cached historical bars
 data/
+
+# local secrets (API private keys, etc.)
+.secrets/
+*.pem

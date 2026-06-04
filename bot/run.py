@@ -1,15 +1,15 @@
 # bot/run.py
 """The single launcher. Reads `control.py` and runs the enabled strategies.
 
-    python -m bot.run backtest      # replay history (or synthetic) through SimBroker
-    python -m bot.run live          # live data; SimBroker / paper / live per control.MODE
+    python -m bot.run backtest                 # replay history through SimBroker
+    python -m bot.run live                      # live data; SimBroker/paper/live per MODE
+    python -m bot.run backtest --venue kalshi   # pick a venue explicitly
+    python -m bot.run backtest --start 2024-01-01 --end 2024-12-31 --timeframe 1Day
 
-Backtest always uses simulated fills regardless of MODE — you don't route orders
-at historical prices. Live honors `control.MODE` (sim fills / Alpaca paper / real).
-CLI flags override control.py for one run, e.g.:
-
-    python -m bot.run backtest --start 2023-01-01 --end 2023-06-30 --timeframe 1Day
-    python -m bot.run backtest --synthetic
+A run targets ONE venue (equities or prediction markets); all enabled strategies
+for that venue run concurrently against one shared book. The venue plugin
+(`bot/framework/venues/`) supplies the data source, specs, and broker — the
+launcher stays venue-agnostic. Backtests always use SimBroker regardless of MODE.
 """
 from __future__ import annotations
 
@@ -18,14 +18,11 @@ import asyncio
 import logging
 import os
 import signal
-from datetime import timedelta
 
 import control
 from bot.framework.assembly import build_engine
-from bot.framework.instruments import AssetClass, InstrumentSpec, PriceKind
-from bot.framework.modes import TradingMode, make_broker, make_data_broker
-from bot.framework.replay import ReplaySource, generate_synthetic_bars
 from bot.framework.sources import ClockSource
+from bot.framework.venues import get_venue
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO"),
@@ -34,37 +31,37 @@ logging.basicConfig(
 )
 log = logging.getLogger("bot.run")
 
-_TF_DELTA = {"1Day": timedelta(days=1), "1Hour": timedelta(hours=1), "1Min": timedelta(minutes=1)}
 
-
-def _enabled_strategies():
-    strs = [s for s in control.STRATEGIES if s.enabled]
-    if not strs:
+def _select_strategies(venue_arg: str | None):
+    """Enabled strategies for the chosen venue (inferred if a single venue, else
+    requires --venue)."""
+    enabled = [s for s in control.STRATEGIES if s.enabled]
+    if not enabled:
         raise SystemExit("no enabled strategies in control.py")
-    return strs
-
-
-def _union_symbols(strategies) -> list[str]:
-    return sorted({sym for s in strategies for sym in s.symbols})
+    venues = {s.venue for s in enabled}
+    venue = venue_arg or (venues.pop() if len(venues) == 1 else None)
+    if venue is None:
+        raise SystemExit(f"enabled strategies span venues {sorted(venues)}; "
+                         f"pick one with --venue")
+    chosen = [s for s in enabled if s.venue == venue]
+    if not chosen:
+        raise SystemExit(f"no enabled strategies for venue {venue!r}")
+    symbols = sorted({sym for s in chosen for sym in s.symbols})
+    return venue, chosen, symbols
 
 
 # --- live -------------------------------------------------------------------
-async def _run_live() -> None:
-    from bot.framework.adapters.equities_alpaca import EquitiesAlpacaAdapter
+async def _run_live(venue_arg: str | None) -> None:
+    venue_name, strategies, symbols = _select_strategies(venue_arg)
+    venue = get_venue(venue_name)
+    log.info("LIVE | venue=%s mode=%s | strategies=%s | universe=%s",
+             venue_name, control.MODE.value, [s.name for s in strategies], symbols)
 
-    strategies = _enabled_strategies()
-    symbols = _union_symbols(strategies)
-    log.info("LIVE | mode=%s | strategies=%s | universe=%s",
-             control.MODE.value, [s.name for s in strategies], symbols)
-
-    adapter = EquitiesAlpacaAdapter(symbols, subscribe=("trades", "quotes"),
-                                    broker=make_data_broker(control.MODE))
-    specs = adapter.build_specs(symbols)
-    spec_map = {s.symbol: s for s in specs}
-    broker = make_broker(control.MODE, spec_map, control.CONFIG.starting_cash)
+    source, specs = venue.live_setup(symbols, control.MODE)
+    broker = venue.make_broker(control.MODE, {s.symbol: s for s in specs},
+                               control.CONFIG.starting_cash)
     clock = ClockSource(control.CONFIG.decision_interval_seconds)
-
-    engine = build_engine(control.CONFIG, specs, sources=[adapter, clock],
+    engine = build_engine(control.CONFIG, specs, sources=[source, clock],
                           strategies=strategies, broker=broker)
 
     stop = asyncio.Event()
@@ -78,39 +75,25 @@ async def _run_live() -> None:
 
 
 # --- backtest ---------------------------------------------------------------
-def _backtest_specs(symbols: list[str]) -> list[InstrumentSpec]:
-    return [InstrumentSpec(symbol=s, asset_class=AssetClass.EQUITY,
-                           price_kind=PriceKind.CONTINUOUS, slippage_bps=2.0)
-            for s in symbols]
-
-
 async def _run_backtest(args) -> None:
-    strategies = _enabled_strategies()
-    symbols = _union_symbols(strategies)
+    from bot.framework.replay import ReplaySource
+
+    venue_name, strategies, symbols = _select_strategies(args.venue)
+    venue = get_venue(venue_name)
     bt = {**control.BACKTEST}
     if args.start: bt["start"] = args.start
     if args.end: bt["end"] = args.end
     if args.timeframe: bt["timeframe"] = args.timeframe
-    if args.synthetic: bt["synthetic"] = True
 
-    tf = bt["timeframe"]
-    if bt["synthetic"]:
-        log.info("BACKTEST | synthetic data | strategies=%s | universe=%s",
-                 [s.name for s in strategies], symbols)
-        events = generate_synthetic_bars(symbols, n=600)
-        decision_interval = timedelta(minutes=5)
-    else:
-        from bot.framework.history import fetch_or_load
-        log.info("BACKTEST | %s %s..%s | strategies=%s | universe=%s",
-                 tf, bt["start"], bt["end"], [s.name for s in strategies], symbols)
-        events = fetch_or_load(symbols, bt["start"], bt["end"], timeframe=tf)
-        decision_interval = _TF_DELTA.get(tf, timedelta(days=1))
+    log.info("BACKTEST | venue=%s %s %s..%s | strategies=%s | universe=%s",
+             venue_name, bt["timeframe"], bt["start"], bt["end"],
+             [s.name for s in strategies], symbols)
 
+    events, specs, decision_interval = venue.backtest_setup(
+        symbols, bt["start"], bt["end"], bt["timeframe"])
     if not events:
-        raise SystemExit("no bars to replay — check symbols/dates/credentials, "
-                         "or run with --synthetic")
+        raise SystemExit("no bars to replay — check symbols/dates/credentials.")
 
-    specs = _backtest_specs(symbols)
     source = ReplaySource(events, decision_interval=decision_interval)
     engine = build_engine(control.CONFIG, specs, sources=[source],
                           strategies=strategies, run_id="backtest")  # SimBroker
@@ -123,19 +106,20 @@ async def _run_backtest(args) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="bot.run")
     sub = parser.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("live")
+    live = sub.add_parser("live")
+    live.add_argument("--venue")
     bt = sub.add_parser("backtest")
+    bt.add_argument("--venue")
     bt.add_argument("--start")
     bt.add_argument("--end")
     bt.add_argument("--timeframe")
-    bt.add_argument("--synthetic", action="store_true")
     args = parser.parse_args()
 
     if not control.ENABLED:
         raise SystemExit("control.ENABLED is False — the bot is switched off.")
 
     if args.cmd == "live":
-        asyncio.run(_run_live())
+        asyncio.run(_run_live(args.venue))
     else:
         asyncio.run(_run_backtest(args))
 

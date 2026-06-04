@@ -33,21 +33,43 @@ CONFIG = RunConfig(
 # by appending a StrategySpec (and, if it's a new signal, dropping a Signal
 # subclass into bot/framework/signals/). No engine edits.
 STRATEGIES = [
+    # --- equities (Alpaca) --------------------------------------------------
     StrategySpec(
         name="reversion-tech",
+        venue="alpaca",
         signal="reversion",
         enabled=True,
         symbols=["AAPL", "MSFT", "NVDA", "AMD", "INTC"],
         signal_params={"window": 20},
+        allocator="cross_sectional",
         capital_frac=1.0,
     ),
     StrategySpec(
         name="reversion-slow",
+        venue="alpaca",
         signal="reversion",
-        enabled=False,               # ← toggle me on to run alongside the above
+        enabled=False,               # ← toggle on to run alongside the above
         symbols=["AAPL", "MSFT", "GOOGL", "AMZN", "META"],
         signal_params={"window": 60},
+        allocator="cross_sectional",
         capital_frac=0.5,
+    ),
+
+    # --- prediction markets (Kalshi) ---------------------------------------
+    # Fill `symbols` with real Kalshi market tickers (e.g. from get_markets), and
+    # swap `signal` for your own thesis (subclass ProbabilityReversion, override
+    # fair_value). Threshold allocator = per-contract trigger on the edge z-score.
+    StrategySpec(
+        name="kalshi-thesis",
+        venue="kalshi",
+        signal="prob_reversion",
+        enabled=False,               # ← needs real tickers; turn on to trade Kalshi
+        symbols=[],                  # e.g. ["KXBTCD-25DEC3117-T100000", ...]
+        signal_params={"window": 30},
+        allocator="threshold",
+        entry_z=1.0,
+        per_name_frac=0.05,
+        capital_frac=1.0,
     ),
 ]
 
@@ -56,5 +78,4 @@ BACKTEST = {
     "start": "2024-01-01",
     "end": "2024-12-31",
     "timeframe": "1Day",             # 1Day | 1Hour | 1Min
-    "synthetic": False,              # True = random-walk data (no API/creds needed)
 }

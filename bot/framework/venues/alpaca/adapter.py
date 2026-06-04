@@ -1,21 +1,10 @@
-# bot/framework/adapters/equities_alpaca.py
-"""Equities adapter backed by Alpaca (the fully-wired reference asset class).
+# bot/framework/venues/alpaca/adapter.py
+"""Equities data adapter backed by Alpaca's websocket stream (REST-poll fallback).
 
-Data path: Alpaca's **websocket stream** pushes trades/quotes/bars as they happen
-and the callbacks emit normalized events straight onto the engine's queue — no
-polling, no missed-between-polls gaps. Because Alpaca's `Stream._run_forever()`
-is a coroutine, it runs on *our* asyncio loop, so a callback can `await emit(...)`
-directly. A REST-polling path is retained as a graceful fallback for when the
-socket can't connect (bad creds, no entitlement, env without websockets).
-
-Latency floor note: on the free IEX feed data is ~15 min delayed regardless of
-transport — the websocket removes *our* lag, not the feed's. Real-time needs the
-paid SIP feed (`ALPACA_DATA_FEED=sip`). Execution is always simulated by
-`SimBroker`; this adapter never places real orders.
-
-Constraints declared per Alpaca equities: penny ticks, whole-share lots, ~0 fee,
-shortability read live from the asset's `shortable` flag, session hours via the
-Alpaca clock.
+Callbacks emit normalized events straight onto the engine's asyncio loop. On the
+free IEX feed data is ~15 min delayed regardless of transport — the websocket
+removes *our* lag, not the feed's; SIP (`ALPACA_DATA_FEED=sip`) is real-time.
+Execution is always via a `Broker`; this adapter never places orders.
 """
 from __future__ import annotations
 
@@ -34,8 +23,6 @@ log = logging.getLogger(__name__)
 
 
 def _to_dt(ts) -> datetime:
-    """Normalize an Alpaca entity timestamp (datetime / pandas.Timestamp / None)
-    to an aware UTC datetime, defaulting to now on anything unexpected."""
     if isinstance(ts, datetime):
         return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
     to_py = getattr(ts, "to_pydatetime", None)
@@ -51,29 +38,19 @@ class EquitiesAlpacaAdapter(MarketAdapter):
     name = "equities-alpaca"
     asset_class = AssetClass.EQUITY
 
-    def __init__(
-        self,
-        symbols: list[str],
-        *,
-        subscribe: tuple[str, ...] = ("trades", "quotes"),
-        feed: str | None = None,
-        poll_interval: float = 5.0,
-        use_stream: bool = True,
-        broker=None,
-    ):
+    def __init__(self, symbols, *, subscribe=("trades", "quotes"), feed=None,
+                 poll_interval=5.0, use_stream=True, broker=None):
         self.symbols = symbols
-        self.subscribe = subscribe          # any of: "trades", "quotes", "bars"
+        self.subscribe = subscribe
         self.feed = feed or os.getenv("ALPACA_DATA_FEED", "iex")
         self.poll_interval = poll_interval
         self.use_stream = use_stream
-        # lazy import so backtests/tests never need Alpaca creds
         if broker is None:
             from bot.brokers.alpaca import AlpacaBroker
             broker = AlpacaBroker(paper=True)
         self._broker = broker
         self._stream = None
 
-    # --- describe ------------------------------------------------------------
     def build_specs(self, symbols: list[str]) -> list[InstrumentSpec]:
         specs = []
         for s in symbols:
@@ -83,24 +60,17 @@ class EquitiesAlpacaAdapter(MarketAdapter):
             except Exception as e:
                 log.debug("shortable lookup failed for %s (%s); assuming True", s, e)
             specs.append(InstrumentSpec(
-                symbol=s,
-                asset_class=AssetClass.EQUITY,
-                price_kind=PriceKind.CONTINUOUS,
-                tick_size=0.01,
-                lot_size=1.0,
-                taker_fee_bps=0.0,      # Alpaca equities are commission-free
-                slippage_bps=2.0,
-                shortable=shortable,
-            ))
+                symbol=s, asset_class=AssetClass.EQUITY, price_kind=PriceKind.CONTINUOUS,
+                tick_size=0.01, lot_size=1.0, taker_fee_bps=0.0, slippage_bps=2.0,
+                shortable=shortable))
         return specs
 
     def is_open(self, now: datetime | None = None) -> bool:
         try:
             return bool(self._broker.api.get_clock().is_open)
         except Exception:
-            return True  # fail open; SimBroker still needs a price to fill
+            return True
 
-    # --- stream --------------------------------------------------------------
     async def run(self, emit: Emit, stop: asyncio.Event) -> None:
         if self.use_stream:
             try:
@@ -114,11 +84,9 @@ class EquitiesAlpacaAdapter(MarketAdapter):
         import alpaca_trade_api as tradeapi
 
         self._stream = tradeapi.Stream(
-            os.getenv("ALPACA_KEY_ID"),
-            os.getenv("ALPACA_SECRET_KEY"),
+            os.getenv("ALPACA_KEY_ID"), os.getenv("ALPACA_SECRET_KEY"),
             base_url=os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"),
-            data_feed=self.feed,
-        )
+            data_feed=self.feed)
 
         async def on_trade(t):
             await emit(Trade(instrument=t.symbol, ts=_to_dt(getattr(t, "timestamp", None)),
@@ -147,14 +115,9 @@ class EquitiesAlpacaAdapter(MarketAdapter):
 
         log.info("alpaca websocket connecting | feed=%s symbols=%s subscribe=%s",
                  self.feed, self.symbols, self.subscribe)
-
-        # Run the socket and the stop signal concurrently; whichever fires first
-        # wins. If the socket task raises (e.g. auth/entitlement), re-raise so the
-        # caller falls back to polling.
         runner = asyncio.create_task(self._stream._run_forever())
         stopper = asyncio.create_task(stop.wait())
-        done, pending = await asyncio.wait({runner, stopper},
-                                           return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait({runner, stopper}, return_when=asyncio.FIRST_COMPLETED)
         with suppress(Exception):
             await self._stream.stop_ws()
         for task in pending:
@@ -162,7 +125,7 @@ class EquitiesAlpacaAdapter(MarketAdapter):
             with suppress(asyncio.CancelledError):
                 await task
         if runner in done:
-            runner.result()  # propagate a socket-side exception to trigger fallback
+            runner.result()
 
     async def _run_poll(self, emit: Emit, stop: asyncio.Event) -> None:
         log.info("polling Alpaca REST for %s every %ss", self.symbols, self.poll_interval)

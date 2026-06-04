@@ -29,11 +29,21 @@ class StrategySpec:
     name: str
     signal: str = "reversion"
     enabled: bool = True
+    venue: str = "alpaca"          # which venue/asset class: "alpaca" | "kalshi" | ...
     symbols: list[str] = field(default_factory=list)
     signal_params: dict = field(default_factory=dict)   # e.g. {"window": 20}
 
-    # cross-sectional allocator knobs
+    # allocator: "cross_sectional" (rank long-top/short-bottom) or "threshold"
+    # (per-name trigger on a standardized signal — the right shape for a
+    # prediction-market thesis, which is a view on a specific contract).
+    allocator: str = "cross_sectional"
+    capital_frac: float = 1.0      # share of book equity this strategy sizes against
+
+    # cross-sectional knobs
     gross_target_frac: float = 1.0
     top_frac: float = 0.2
     bottom_frac: float = 0.2
-    capital_frac: float = 1.0      # share of book equity this strategy sizes against
+
+    # threshold knobs
+    entry_z: float = 1.0
+    per_name_frac: float = 0.05
