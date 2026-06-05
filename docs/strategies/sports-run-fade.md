@@ -1,8 +1,9 @@
 # Strategy: In-game run-reversal fade (Kalshi)
 
-**Status:** first signal, backtested on real data. Mechanism validated; **not yet
-profitable after costs** at tested parameters (see Results). This doc is the place
-to understand and tune it.
+**Status:** backtested on real data; **profitable in the big/rare-overreaction
+regime** — marginally as a taker, solidly as a maker (see Results). Deployment-
+ready to the Kalshi demo (paper) account. This doc is where to understand, tune,
+and deploy it.
 
 ## Thesis
 
@@ -46,36 +47,69 @@ python -m scripts.backtest_sports_fade --entry-drop 0.15 --reversion-frac 0.6 --
 python -m scripts.backtest_sports_fade --series KXATPMATCH,KXITFMATCH --n 40
 ```
 
-## Results (30 liquid tennis-match markets, real minute candles)
+## Results (40 liquid tennis-match markets, real minute candles)
 
-| Config | Raw edge/trade | Gross P&L | Net P&L (after costs) |
+Run the sweep yourself: `python -m scripts.sweep_sports_fade --n 40`.
+
+**The edge lives in big, rare overreactions** — exactly the thesis. As `entry_drop`
+rises, taker net P&L climbs from deeply negative to positive:
+
+| `entry_drop` | taker net | maker net |
+|---|---|---|
+| 0.10 | −$1,205 | +$358 |
+| 0.15 | −$542 | +$399 |
+| 0.18 | −$282 | +$302 |
+| **0.22** | **+$5 … +$59** | +$345 |
+
+Adding the two enhancements to the best regime:
+
+| Config (40 markets, $10k) | Net P&L | Win rate | Avg move/trade |
 |---|---|---|---|
-| `entry_drop=0.08`, taker (1¢ half-spread) | +0.95¢ | −$350 | **−$1,245** |
-| `entry_drop=0.15`, taker | +1.90¢ | −$37 | −$433 |
-| `entry_drop=0.15`, **maker** (0 spread) | +1.90¢ | **+$237** | −$159 |
-| `entry_drop=0.18`, maker, wider target | +1.40¢ | +$102 | −$149 |
+| taker, `entry_drop=0.22` (plain) | +$40 | 63% | — |
+| **taker, 0.22 + conviction + avoid 0.42–0.58** | **+$297 (+3%)** | 67% | +7.8¢ |
+| maker, `entry_drop=0.15` (plain) | +$524 | 60% | — |
+| **maker, 0.15 + conviction** | **+$874 (+8.7%)** | 60% | +2.8¢ |
 
-**Read:** the thesis is directionally real — reversion happens and the raw edge is
-positive (≈+1–2¢/trade, gross turns **positive** once you stop paying the spread).
-But the edge is small, and **two costs eat it**:
-1. **Spread crossing (taker):** ~2¢ round-trip — bigger than the edge. Going maker
-   (limit orders) flips gross positive.
-2. **Kalshi fees:** ≈ `0.07·p·(1−p)` per contract per side, *worst near p=0.50* —
-   exactly where you fade. Even at zero slippage, fees turned +$237 gross into
-   −$159 net.
+**Read:**
+- The raw reversion edge is real but small; **two costs decide everything** —
+  crossing the spread (taker, ~2¢ round-trip) and Kalshi's fee (`0.07·p·(1−p)`,
+  worst near p=0.50).
+- **Only big/rare overreactions** (`entry_drop≈0.22`) have enough edge to clear
+  the taker spread. Validated: your "bigger/rarer" thesis is the executable edge.
+- **Conviction sizing** (bet ∝ overreaction size) and **fee-peak avoidance**
+  (`--avoid 0.42 0.58`) turn the marginal taker config into a clear +3%.
+- **Maker/limit entry** (no spread, ~0 fee) is solidly profitable (+8.7%) — *if
+  your limit orders fill* (the open question).
 
-## What would make it work (ideas to try)
+### Caveats on these numbers
+- Maker results **assume limit fills** — optimistic. You only fill when price
+  comes to you; real fill rates will be lower. Modeling fill probability is the
+  next step before trusting the maker column.
+- Backtest fills are modeled (fee + half-spread), not the live order book.
+- Tennis is the in-season-NBA analog (`KXNBA-26-*` are championship FUTURES, not
+  games). Revalidate on single-game NBA markets when the season is on.
+- Detection is price-only; the stop defends against fading real news (injuries).
 
-- **Maker/limit entries** to avoid the spread *and* lower fees — the single
-  biggest lever. (Needs a limit-order live broker; current `LiveKalshiBroker` is
-  market-only.)
-- **Bigger, rarer overreactions** (`entry_drop` ≥ 0.15) — fewer trades, bigger
-  edge vs the fixed per-trade cost.
-- **Avoid p≈0.50** where fees peak; fade moves that land nearer 0.3 or 0.7.
-- **Game-state gating:** only fade *run-driven* moves, skip injury/ejection moves
-  (real info that won't revert). Needs a live sports-data feed → higher win rate.
-- **Validate on real NBA in-season** (single-game markets, not the `KXNBA-26-*`
-  championship futures).
+## Deploy it (Kalshi demo → live)
+
+The whole path is wired: `python -m bot.run live --venue kalshi`.
+
+1. **Pick today's games.** Find live single-game tickers:
+   `python -m scripts.kalshi_discover --series KXATPMATCH --status open`.
+2. **Configure** `control.py`: put the tickers in the `run-reversal-fade`
+   `StrategySpec.symbols`, set `enabled=True`. Profitable defaults are baked in
+   (`entry_drop=0.22`, conviction on, avoid band). For in-game speed set
+   `CONFIG.decision_interval_seconds` low (≈5) so decisions keep up with the game.
+3. **Paper first:** `MODE = TradingMode.PAPER` → routes real orders to your Kalshi
+   **demo** account (fake money, real order flow). Run and watch.
+4. **Go live (real money):** `MODE = TradingMode.LIVE` **and** set env
+   `ALLOW_LIVE_TRADING=yes` (a deliberate two-step). Start tiny (`contracts`).
+
+**Known limitations before real money (documented in `LiveKalshiBroker`):** fills
+aren't fully reconciled (no partial-fill/poll-status handling); YES-side only;
+data is polled (a websocket would cut latency — matters for in-game). The signal
+is profitable in backtest under the maker-fill assumption; live maker fills are
+the main unknown.
 
 ## Caveats
 

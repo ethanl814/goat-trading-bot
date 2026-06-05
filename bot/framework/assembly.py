@@ -72,7 +72,9 @@ def _make_allocator(sspec: StrategySpec):
         return ThresholdAllocator(entry_z=sspec.entry_z, per_name_frac=sspec.per_name_frac)
     if sspec.allocator == "event_fade":
         return EventFadeAllocator(contracts=sspec.contracts,
-                                  max_trade_dollars=sspec.max_trade_dollars)
+                                  max_trade_dollars=sspec.max_trade_dollars,
+                                  scale_by_conviction=sspec.scale_by_conviction,
+                                  conviction_cap=sspec.conviction_cap)
     return CrossSectionalAllocator(
         gross_target_frac=sspec.gross_target_frac,
         top_frac=sspec.top_frac,

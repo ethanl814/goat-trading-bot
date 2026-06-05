@@ -51,3 +51,5 @@ class StrategySpec:
     # event_fade knobs (discrete prediction-market trades)
     contracts: int = 100
     max_trade_dollars: float | None = None
+    scale_by_conviction: bool = False    # size ∝ overreaction magnitude
+    conviction_cap: float = 3.0

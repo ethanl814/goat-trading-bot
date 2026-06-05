@@ -73,19 +73,24 @@ STRATEGIES = [
     ),
 
     # In-game run-reversal fade (see docs/strategies/sports-run-fade.md).
-    # Backtest first: `python -m scripts.backtest_sports_fade`. Not yet net-
-    # profitable after Kalshi fees — keep disabled for live until tuned (maker
-    # entries / bigger overreactions). Put live single-game tickers in `symbols`.
+    # Backtest-profitable in the BIG/RARE-overreaction regime: taker +3% with
+    # conviction + fee-peak avoidance, maker +8.7%. Params below are the validated
+    # taker config. To deploy: put today's single-game tickers in `symbols`, set
+    # enabled=True, start in MODE=PAPER (Kalshi demo). For in-game speed also drop
+    # CONFIG.decision_interval_seconds to ~5.
     StrategySpec(
         name="run-reversal-fade",
         venue="kalshi",
         signal="run_fade",
-        enabled=False,
+        enabled=False,               # ← set True + add symbols to deploy
         symbols=[],                  # live single-game win-market tickers
-        signal_params={"lookback": 5, "entry_drop": 0.12, "reversion_frac": 0.5,
-                       "stop_drop": 0.10, "max_hold": 15},
+        signal_params={"lookback": 4, "entry_drop": 0.22, "reversion_frac": 0.4,
+                       "stop_drop": 0.10, "max_hold": 15,
+                       "avoid_lo": 0.42, "avoid_hi": 0.58},  # dodge the p~0.5 fee peak
         allocator="event_fade",
         contracts=100,
+        scale_by_conviction=True,    # bet more on bigger overreactions
+        conviction_cap=3.0,
     ),
 ]
 

@@ -37,13 +37,24 @@ class LiveKalshiBroker(Broker):
             return None
         action = "buy" if qty > 0 else "sell"
         try:
-            self._client.create_order(ticker=order.instrument, side="yes",
-                                      action=action, count=abs(qty))
+            resp = self._client.create_order(ticker=order.instrument, side="yes",
+                                             action=action, count=abs(qty))
         except Exception:
-            log.exception("kalshi order failed: %s", order)
+            log.exception("kalshi order REJECTED: %s", order)
             return None
-        ref = state.price() or 0.0
-        return Fill(order.instrument, qty, ref, 0.0, datetime.now(timezone.utc), realized=0.0)
+        # best-effort read of the actual fill from the order response; fall back
+        # to the reference price. NOTE: market orders fill ~immediately, but full
+        # fill reconciliation (poll order status, partial fills) is still a TODO.
+        o = (resp or {}).get("order", resp) or {}
+        fill_price = (to_float(o.get("yes_price_dollars"))
+                      or to_float(o.get("average_fill_price"))
+                      or (state.price() or 0.0))
+        filled = int(o.get("filled_count") or abs(qty))
+        signed = filled if qty > 0 else -filled
+        log.info("KALSHI %s %s x%d @ ~%.2f (order_id=%s status=%s)",
+                 action.upper(), order.instrument, filled, fill_price,
+                 o.get("order_id"), o.get("status"))
+        return Fill(order.instrument, signed, fill_price, 0.0, datetime.now(timezone.utc), realized=0.0)
 
     def positions(self) -> dict[str, Position]:
         out: dict[str, Position] = {}

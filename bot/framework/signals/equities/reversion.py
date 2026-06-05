@@ -1,25 +1,29 @@
-# bot/framework/signals/reversion.py
-"""Reference signal: short-window return reversion (z-score).
+# bot/framework/signals/equities/reversion.py
+# ============================================================================
+# STRATEGY CARD
+#   name      : reversion          desk: equities         status: REFERENCE
+#   thesis    : (none — plumbing) short-window return mean-reversion
+#   signal    : negative z-score of the latest 1-step return (vol-normalized)
+#   entry/exit: none of its own — a cross-sectional allocator ranks the value
+#               and goes long top slice / short bottom slice
+#   risk      : book-level only (RiskMonitor: gross/net caps + drawdown kill
+#               switch); no per-name stop. Sizing by the allocator.
+#   costs     : not cost-tuned; this only validates the pipeline end to end.
+# ============================================================================
+"""Reference signal — exercises the full pipeline, NOT meant to be profitable.
 
-Its only job is to exercise the full pipeline end to end — it is *not* meant to
-be profitable. It's chosen as the reference because it works on the lowest common
-denominator of data (a price series), so it runs on bars *or* trades and is
-backtestable on cheap OHLCV data across every asset class. (Order-book imbalance
-would be a better live signal but isn't backtestable without scarce L2 history —
-hence reversion as the portable default.)
-
-Incremental by construction: each price update computes the 1-step return and
-folds it into a `RollingMeanStd` window in O(1). The emitted value is the
-*negative* z-score of the latest return — recent abnormal up-moves → negative
-(expect mean reversion down) and vice-versa. Already vol-normalized, so the
-cross-sectional allocator can rank it directly.
+Chosen because it works on the lowest common denominator of data (a price
+series), so it runs on bars or trades and backtests on cheap OHLCV anywhere.
+Incremental: each price update folds the 1-step return into a `RollingMeanStd`
+window in O(1); the emitted value is the negative z-score of the latest return
+(abnormal up-move → negative → expect reversion down).
 """
 from __future__ import annotations
 
 from bot.framework.events import Event
+from bot.framework.registry import register
 from bot.framework.signals.base import Signal
 from bot.framework.state import MarketState, RollingMeanStd
-from bot.framework.registry import register
 
 
 @register("reversion")

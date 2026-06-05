@@ -107,9 +107,12 @@ class EventFadeAllocator(Allocator):
     in/out decision at a controlled size.
     """
 
-    def __init__(self, *, contracts: int = 100, max_trade_dollars: float | None = None):
+    def __init__(self, *, contracts: int = 100, max_trade_dollars: float | None = None,
+                 scale_by_conviction: bool = False, conviction_cap: float = 3.0):
         self.contracts = contracts
         self.max_trade_dollars = max_trade_dollars
+        self.scale_by_conviction = scale_by_conviction  # size ∝ signal value (overreaction size)
+        self.conviction_cap = conviction_cap            # but no more than this multiple
 
     def targets(self, signals, states, specs, equity):
         out: dict[str, float] = {}
@@ -121,9 +124,11 @@ class EventFadeAllocator(Allocator):
                 continue
             if v > 0:
                 count = self.contracts
+                if self.scale_by_conviction:
+                    count = int(self.contracts * min(v, self.conviction_cap))
                 if self.max_trade_dollars:
                     unit = st.price() * specs[sym].contract_multiplier
-                    count = min(count, int(self.max_trade_dollars / unit)) if unit > 0 else 0
+                    count = min(count, int(self.max_trade_dollars / unit)) if unit > 0 else count
                 out[sym] = _capped(specs[sym], float(count))  # long-only YES
             else:
                 out[sym] = 0.0  # flat -> exit

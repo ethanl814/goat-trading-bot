@@ -1,22 +1,27 @@
-# bot/framework/signals/edge.py
-"""Prediction-market reference signal: standardized edge vs a fair value.
+# bot/framework/signals/prediction_markets/edge.py
+# ============================================================================
+# STRATEGY CARD
+#   name      : prob_reversion     desk: prediction_markets   status: TEMPLATE
+#   thesis    : (yours goes here) market price deviates from a fair value and
+#               reverts toward it
+#   signal    : standardized edge = (fair_value - price) / vol; positive => the
+#               market underprices YES => buy
+#   entry/exit: per-name trigger via the `threshold` allocator (enter when the
+#               edge z-score exceeds entry_z; exit when it decays)
+#   risk      : book-level (RiskMonitor) + long-only/cap from the InstrumentSpec;
+#               no per-name stop here (add one in a subclass if needed)
+#   costs     : Kalshi fees + spread apply — see the sports-fade card for how
+#               costs dominate small edges
+# ============================================================================
+"""Prediction-market thesis TEMPLATE. Override `fair_value` with your model.
 
-This is the *template* for testing a prediction-market theory. A theory is just
-a fair-value estimate for a contract; the signal emits the standardized edge
-(how far the market price sits from fair, in volatility units), which a
-`ThresholdAllocator` turns into a per-name trigger.
-
-`ProbabilityReversion` ships a trivial fair value — a rolling mean of the price —
-purely to exercise the pipeline (NOT alpha). To test a real theory, subclass it
-and override `fair_value(self, state)` to return YOUR model's probability:
+The shipped `fair_value` (rolling mean of price) is plumbing only. To test a real
+theory, subclass and return YOUR probability estimate:
 
     @register("my_thesis")
     class MyThesis(ProbabilityReversion):
         def fair_value(self, state):
-            return my_model_prob(self.instrument, state)   # your edge
-
-Everything else (standardization, triggering, sizing, settlement PnL) is handled
-by the framework.
+            return my_model_prob(self.instrument, state)
 """
 from __future__ import annotations
 

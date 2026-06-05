@@ -4,7 +4,7 @@ import pytest
 
 from bot.framework.allocator import EventFadeAllocator
 from bot.framework.events import Trade
-from bot.framework.signals.sports_fade import RunReversalFade
+from bot.framework.signals.prediction_markets.sports_fade import RunReversalFade
 from bot.framework.state import MarketState
 from bot.framework.venues.kalshi.adapter import build_spec
 
@@ -30,7 +30,8 @@ def test_enters_on_fast_drop_and_exits_on_reversion():
     _feed(sig, st, [0.50, 0.50, 0.50, 0.50])   # quiet
     assert sig.value() == 0.0                    # FLAT
     _feed(sig, st, [0.38])                        # fast 12c drop -> enter
-    assert sig.state == "LONG" and sig.value() == 1.0
+    # value() = conviction = drop/entry_drop = 0.12/0.10 = 1.2
+    assert sig.state == "LONG" and sig.value() == pytest.approx(1.2)
     _feed(sig, st, [0.45])                        # recovers past 0.44 target -> exit
     assert sig.state == "FLAT" and sig.value() == 0.0
     assert sig.trades[-1]["reason"] == "reverted"
@@ -82,3 +83,23 @@ def test_event_fade_allocator_enters_fixed_count_and_exits():
     states, specs = {"KXTEST": st}, {"KXTEST": SPEC}
     assert alloc.targets({"KXTEST": 1.0}, states, specs, 10_000)["KXTEST"] == 100   # in -> long 100
     assert alloc.targets({"KXTEST": 0.0}, states, specs, 10_000)["KXTEST"] == 0     # flat -> exit
+
+
+def test_event_fade_conviction_scaling():
+    alloc = EventFadeAllocator(contracts=100, scale_by_conviction=True, conviction_cap=3.0)
+    st = MarketState(SPEC)
+    st.update(Trade(instrument="KXTEST", price=0.40))
+    states, specs = {"KXTEST": st}, {"KXTEST": SPEC}
+    assert alloc.targets({"KXTEST": 1.5}, states, specs, 10_000)["KXTEST"] == 150   # 1.5x conviction
+    assert alloc.targets({"KXTEST": 9.0}, states, specs, 10_000)["KXTEST"] == 300   # capped at 3x
+
+
+def test_avoid_band_skips_fee_peak_entries():
+    sig, st = _new(avoid_lo=0.45, avoid_hi=0.55)
+    # a 12c drop that lands at 0.50 (inside the avoid band) must NOT enter
+    _feed(sig, st, [0.62, 0.62, 0.62, 0.62, 0.50])
+    assert sig.state == "FLAT"
+    # the same size drop landing at 0.38 (outside the band) DOES enter
+    sig2, st2 = _new(avoid_lo=0.45, avoid_hi=0.55)
+    _feed(sig2, st2, [0.50, 0.50, 0.50, 0.50, 0.38])
+    assert sig2.state == "LONG"
