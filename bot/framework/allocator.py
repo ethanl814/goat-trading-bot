@@ -95,6 +95,41 @@ class CrossSectionalAllocator(Allocator):
         return targets
 
 
+class EventFadeAllocator(Allocator):
+    """Discrete event-trade sizing for prediction markets: when a signal says
+    "be in this trade" (value > 0) hold a FIXED contract count; when it says flat
+    (value <= 0) exit fully. Fixed count (not a dollar fraction) means the target
+    doesn't drift as the price moves, so a held position isn't churned tick-to-tick
+    — the signal alone decides entry and exit. Long-only (buys YES on the dip).
+
+    `max_trade_dollars` caps risk per trade (count is reduced so count*price stays
+    under the cap). The signal owns the trade *logic*; this just executes its
+    in/out decision at a controlled size.
+    """
+
+    def __init__(self, *, contracts: int = 100, max_trade_dollars: float | None = None):
+        self.contracts = contracts
+        self.max_trade_dollars = max_trade_dollars
+
+    def targets(self, signals, states, specs, equity):
+        out: dict[str, float] = {}
+        for sym, v in signals.items():
+            if v is None:
+                continue
+            st = states.get(sym)
+            if not st or st.price() in (None, 0):
+                continue
+            if v > 0:
+                count = self.contracts
+                if self.max_trade_dollars:
+                    unit = st.price() * specs[sym].contract_multiplier
+                    count = min(count, int(self.max_trade_dollars / unit)) if unit > 0 else 0
+                out[sym] = _capped(specs[sym], float(count))  # long-only YES
+            else:
+                out[sym] = 0.0  # flat -> exit
+        return out
+
+
 class ThresholdAllocator(Allocator):
     """Per-name triggers on a standardized signal (e.g. |z| > entry). Equal-weight
     fixed notional per triggered name. Kept simple; the cross-sectional allocator

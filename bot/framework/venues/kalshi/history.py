@@ -10,7 +10,7 @@ already probabilities in [0,1]. Pair a replay of these bars with a final
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bot.framework.events import Bar, Event, Resolution
 from bot.framework.venues.kalshi.client import KalshiClient, to_float
@@ -78,6 +78,58 @@ def fetch_bars(tickers: list[str], start: str, end: str, *,
             events.append(Bar(instrument=ticker, ts=ts, open=o, high=h, low=l, close=c,
                               volume=to_float(candle.get("volume_fp") or candle.get("volume")) or 0.0))
     log.info("fetched %d Kalshi candles over %s (%s, %s..%s)", len(events), tickers, timeframe, start, end)
+    return events
+
+
+def _parse_ts(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def fetch_game_window(tickers: list[str], *, client: KalshiClient | None = None,
+                      lookback_hours: int = 24, period_interval: int = 1) -> list[Event]:
+    """Minute-level bars + a settlement for each single-event market (a game/match).
+
+    Single-game markets live < a day, and Kalshi range-limits minute candles, so
+    we fetch a window ending at each market's close (read from the market object)
+    rather than a fixed calendar range. This is the data path for the in-game
+    fade backtest. Returns Bars (intra-game price path) + a final Resolution.
+    """
+    client = client or KalshiClient()
+    events: list[Event] = []
+    for ticker in tickers:
+        try:
+            m = client.get_market(ticker)
+        except Exception as e:
+            log.warning("get_market(%s) failed: %s", ticker, e)
+            continue
+        close_dt = _parse_ts(m.get("close_time") or m.get("expiration_time")) or datetime.now(timezone.utc)
+        end_ts = int(close_dt.timestamp())
+        start_ts = end_ts - lookback_hours * 3600
+        try:
+            data = client.get_candlesticks(ticker, start_ts, end_ts, period_interval)
+        except Exception as e:
+            log.warning("candlesticks(%s) failed: %s", ticker, e)
+            continue
+        n_before = len(events)
+        for candle in data.get("candlesticks", []):
+            ohlc = _ohlc(candle)
+            if ohlc is None:
+                continue
+            o, h, l, c = ohlc
+            ts = datetime.fromtimestamp(int(candle["end_period_ts"]), tz=timezone.utc)
+            events.append(Bar(instrument=ticker, ts=ts, open=o, high=h, low=l, close=c,
+                              volume=to_float(candle.get("volume_fp")) or 0.0))
+        if (m.get("status") or "").lower() in _SETTLED:
+            value = 1.0 if (m.get("result") or "").lower() == "yes" else 0.0
+            events.append(Resolution(instrument=ticker, value=value,
+                                     ts=close_dt + timedelta(minutes=1)))
+        log.info("  %s: %d bars + %s", ticker, len(events) - n_before - 1,
+                 m.get("result") or m.get("status"))
     return events
 
 

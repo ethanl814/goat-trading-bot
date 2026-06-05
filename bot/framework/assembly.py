@@ -11,7 +11,8 @@ usage a one-liner.
 """
 from __future__ import annotations
 
-from bot.framework.allocator import CrossSectionalAllocator, ThresholdAllocator
+from bot.framework.allocator import (CrossSectionalAllocator, EventFadeAllocator,
+                                      ThresholdAllocator)
 from bot.framework.broker import Broker, SimBroker
 from bot.framework.config import RunConfig, StrategySpec
 from bot.framework.engine import EventEngine
@@ -69,6 +70,9 @@ def build_engine(
 def _make_allocator(sspec: StrategySpec):
     if sspec.allocator == "threshold":
         return ThresholdAllocator(entry_z=sspec.entry_z, per_name_frac=sspec.per_name_frac)
+    if sspec.allocator == "event_fade":
+        return EventFadeAllocator(contracts=sspec.contracts,
+                                  max_trade_dollars=sspec.max_trade_dollars)
     return CrossSectionalAllocator(
         gross_target_frac=sspec.gross_target_frac,
         top_frac=sspec.top_frac,

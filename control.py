@@ -71,6 +71,22 @@ STRATEGIES = [
         per_name_frac=0.05,
         capital_frac=1.0,
     ),
+
+    # In-game run-reversal fade (see docs/strategies/sports-run-fade.md).
+    # Backtest first: `python -m scripts.backtest_sports_fade`. Not yet net-
+    # profitable after Kalshi fees — keep disabled for live until tuned (maker
+    # entries / bigger overreactions). Put live single-game tickers in `symbols`.
+    StrategySpec(
+        name="run-reversal-fade",
+        venue="kalshi",
+        signal="run_fade",
+        enabled=False,
+        symbols=[],                  # live single-game win-market tickers
+        signal_params={"lookback": 5, "entry_drop": 0.12, "reversion_frac": 0.5,
+                       "stop_drop": 0.10, "max_hold": 15},
+        allocator="event_fade",
+        contracts=100,
+    ),
 ]
 
 # --- backtest window (used by `python -m bot.run backtest`) -----------------

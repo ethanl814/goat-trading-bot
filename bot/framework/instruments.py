@@ -43,7 +43,13 @@ class InstrumentSpec:
     contract_multiplier: float = 1.0  # $ per 1.0 price per 1 unit (futures > 1)
     taker_fee_bps: float = 0.0
     maker_fee_bps: float = 0.0
-    slippage_bps: float = 1.0        # sim slippage assumption per fill
+    slippage_bps: float = 1.0        # sim slippage as a fraction of price (bps)
+    slippage_price: float = 0.0      # sim slippage as an ABSOLUTE price offset (e.g.
+                                     # half-spread in cents); preferred when > 0
+    # Fee model: "bps" (notional * taker_fee_bps) or "kalshi"
+    # (ceil(fee_coefficient * contracts * p * (1-p)), rounded up to the cent).
+    fee_kind: str = "bps"
+    fee_coefficient: float = 0.07
 
     # --- position constraints (consumed generically by allocator + risk) -----
     shortable: bool = True
@@ -70,9 +76,31 @@ class InstrumentSpec:
         return lots * self.lot_size
 
     def fee(self, qty: float, price: float, taker: bool = True) -> float:
+        if self.fee_kind == "kalshi":
+            # Kalshi trading fee: round_up(coef * contracts * price * (1 - price)),
+            # rounded up to the next cent. Highest near p=0.5, ~0 near 0/1.
+            import math
+            raw = self.fee_coefficient * abs(qty) * price * (1.0 - price)
+            # round up to the next cent; the epsilon guards against fp dust
+            # (e.g. 1.75*100 == 175.0000000000003) spuriously bumping a cent.
+            return math.ceil(raw * 100.0 - 1e-9) / 100.0
         bps = self.taker_fee_bps if taker else self.maker_fee_bps
         notional = abs(qty) * price * self.contract_multiplier
         return notional * bps / 1e4
+
+    def apply_slippage(self, ref_price: float, buying: bool) -> float:
+        """Fill price after slippage moves against us. Absolute (`slippage_price`,
+        e.g. half-spread) takes precedence over bps; result is tick-rounded and
+        clamped to settlement bounds for probability instruments."""
+        if self.slippage_price > 0:
+            fill = ref_price + self.slippage_price if buying else ref_price - self.slippage_price
+        else:
+            slip = self.slippage_bps / 1e4
+            fill = ref_price * (1 + slip) if buying else ref_price * (1 - slip)
+        fill = self.round_price(fill)
+        if self.price_kind is PriceKind.PROBABILITY:
+            fill = max(self.settle_low, min(self.settle_high, fill))
+        return fill
 
     @property
     def can_short(self) -> bool:

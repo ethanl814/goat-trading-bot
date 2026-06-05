@@ -107,8 +107,7 @@ class SimBroker(Broker):
             return None
 
         # slippage moves the fill against us, in the direction of the trade
-        slip = spec.slippage_bps / 1e4
-        fill_price = spec.round_price(ref * (1 + slip) if qty > 0 else ref * (1 - slip))
+        fill_price = spec.apply_slippage(ref, buying=qty > 0)
         fee = spec.fee(qty, fill_price, taker=True)
         realized = self._apply(spec, qty, fill_price)
         self.cash += -qty * fill_price * spec.contract_multiplier - fee

@@ -47,3 +47,7 @@ class StrategySpec:
     # threshold knobs
     entry_z: float = 1.0
     per_name_frac: float = 0.05
+
+    # event_fade knobs (discrete prediction-market trades)
+    contracts: int = 100
+    max_trade_dollars: float | None = None

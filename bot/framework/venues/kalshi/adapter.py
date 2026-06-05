@@ -81,9 +81,15 @@ class KalshiAdapter(MarketAdapter):
             await emit(Trade(instrument=ticker, price=last))
 
 
-def build_spec(ticker: str) -> InstrumentSpec:
+def build_spec(ticker: str, *, fee_coefficient: float = 0.07,
+               half_spread: float = 0.01) -> InstrumentSpec:
     """Static spec for a Kalshi YES contract: probability price in [0,1], pays $1
-    on YES resolve, long-only (buying NO is the short side; modeled later)."""
+    on YES resolve, long-only (buying NO is the short side; modeled later).
+
+    Cost model is realistic: `fee_kind="kalshi"` uses Kalshi's actual per-contract
+    fee, and `slippage_price=half_spread` charges crossing the spread (cents) on
+    each fill — both critical for judging whether an edge survives. In-game books
+    are thinner; bump `half_spread` for a more conservative backtest."""
     return InstrumentSpec(
         symbol=ticker,
         asset_class=AssetClass.PREDICTION_MARKET,
@@ -91,8 +97,9 @@ def build_spec(ticker: str) -> InstrumentSpec:
         tick_size=0.01,          # Kalshi prices in 1-cent increments
         lot_size=1.0,            # whole contracts
         contract_multiplier=1.0,  # 1 contract -> $1 at YES resolve
-        taker_fee_bps=0.0,       # NOTE: real Kalshi fee ≈ ceil(0.07·p·(1-p)·count); add later
-        slippage_bps=10.0,
+        fee_kind="kalshi",
+        fee_coefficient=fee_coefficient,
+        slippage_price=half_spread,
         shortable=False,
         long_only=True,
         settle_low=0.0,

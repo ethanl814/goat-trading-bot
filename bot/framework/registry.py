@@ -44,7 +44,9 @@ def discover_signals() -> dict[str, type]:
 
 
 def get_signal(name: str) -> type:
-    if not _REGISTRY:
+    # A miss may just mean not every signal module has been imported yet (e.g. a
+    # test imported one directly). Run full discovery before giving up.
+    if name not in _REGISTRY:
         discover_signals()
     if name not in _REGISTRY:
         raise KeyError(f"unknown signal {name!r}; registered: {sorted(_REGISTRY)}")
